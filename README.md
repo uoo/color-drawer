@@ -23,3 +23,6 @@ covered with something insulating like paper or tape, as it merely supplies
 a reference for the capacitive sensing (leaving it bare can confuse the
 capacitive sensor, causing it to get "stuck" for a second or so, during which
 you can't control the Neopixels.
+
+I like to cover the Circuit Playground with some paper or a thin layer of white foam to act as a diffuser for the Neopixels.  Add a small battery to power it
+and you're ready to go.
