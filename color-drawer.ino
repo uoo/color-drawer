@@ -1,4 +1,4 @@
-// Moon Fairies for Circuit Playground
+// Draw in color using Circuit Playground
 
 #include <Adafruit_CircuitPlayground.h>
 #include <Wire.h>
@@ -7,16 +7,16 @@
 // enable this for serial debugging (disable to run without a computer connected)
 //#define DEBUG        Serial
 
-// enable this to run LEDs in "calligraphic" mode in angled diagonal pair
+// enable this to choose which LEDs to light based on which way is currently "down"
 #define GRAVITY
 
 // enable this to run "test" sequence of possible color values
 //#define TEST
 
-// pin for capacitive sensing "LED on" state
+// pin for capacitive sensing "LED on" input
 #define CAP_ON         6
 
-// pin for capactive sensing "next LED color"
+// pin for capactive sensing "next LED color" input
 #define CAP_COLOR      9
 
 #define CAP_TIMEOUT   10000
@@ -29,21 +29,27 @@
 #define NPIXELS       10
 
 // adjust this to desired brightness
-#define PIXEL_BRIGHT  80  // LED brightness
+#define PIXEL_BRIGHT  255  // LED brightness
 
 // adjust this for reliable sensing with whatever wiring and pads you're using
-#define MIN_CAP_ON       10  // minimum capacitance reading for touch sensing
-#define MIN_CAP_COLOR    25
+#define MIN_CAP_ON       15   // minimum capacitance reading for touch sensing
+#define MIN_CAP_COLOR    20   // minimum capacitance reading for color switch sensing
 
-#define LED_POSITIONS 12
+#define LED_POSITIONS 12      // Circuit Playground LEDs are arranged like 12 in a circle (with some positions unpopulated)
+
 // trig functions give their results in radians
-// this converts radians to one of twelve LED positions
-#define LED_DIV ((LED_POSITIONS * PI) / 180)
+#define LED_MUL     (180 / (LED_POSITIONS * PI))
+
+// convert radians to LED position
+#define RADIANS_TO_LED(theta) (theta * LED_MUL)
 
 #define LED_OFFSET     2  // how many LEDs to advance from vertical to give desired visual angle
 
 // time before accepting another LED color change (to avoid double triggering)
 #define MIN_CHANGE    1000
+
+// color value for NeoPixel off
+#define NEOPIXEL_OFF  0x000000
 
 // special "color" value to indicate end of color sequence
 #define END           0x01000000
@@ -90,6 +96,18 @@ static unsigned long          nextchangetime; // timestamp when next color chang
 static CPlay_CapacitiveSensor cap_on;         // "on" capacitive sensor
 static CPlay_CapacitiveSensor cap_color;      // "color" capacitive sensor
 
+// set pair of LEDs to specified color
+
+static void
+setpair(
+  byte      led,      // LED to set
+  uint32_t  newcolor) // color for LED
+{
+    // set specified LED
+    CircuitPlayground.setPixelColor(led, newcolor);
+    // also set LED on other side
+    CircuitPlayground.setPixelColor((led + 5) % NPIXELS, newcolor);
+}
 
 // initialization function
 
@@ -110,8 +128,8 @@ setup()
   last           = true;                  // require a cycle before color change
   nextchangetime = 0;                     // next (first) change is valid any time
   lastled        = 0;
-  cap_on         = CircuitPlayground.cap[CAP_ON   ];
-  cap_color      = CircuitPlayground.cap[CAP_COLOR];
+  //cap_on         = CircuitPlayground.cap[CAP_ON   ];
+  //cap_color      = CircuitPlayground.cap[CAP_COLOR];
 
   CircuitPlayground.begin();
 
@@ -131,11 +149,13 @@ void
 loop()
 {
 #ifdef GRAVITY
+  // we'll be computing LED position using the accelerometer
   int           led;      // bottom LED
   float         x;        // X acceleration
   float         y;        // Y acceleration
   float         theta;    // angle
 #else
+  // we'll just light all the LEDs
   byte          pixel;    // neopixel counter
 #endif
 
@@ -145,10 +165,12 @@ loop()
   uint32_t      setcolor; // color to set LEDs to
   unsigned long now;      // current time
 
+  // check slide switch position
+
   slide = CircuitPlayground.slideSwitch();
   
   if (slide && !lastslide) {
-    // slide switch on left, reset
+    // slide switch on left, reset color counter
     CircuitPlayground.redLED(HIGH);       // light LED for reset feedback
     colorindex = 0;                       // reset color index
     curcolor = sequence[colorindex];      // update color
@@ -159,9 +181,11 @@ loop()
 
   // slide switch on right, run
 
-  lastslide = slide;                      // remember we're done resetting
+  lastslide = slide;                      // remember last slide switch position
 
   CircuitPlayground.redLED(LOW);          // okay, not resetting
+
+  // read color change pad capacitance
 
   cap = CircuitPlayground.readCap(CAP_COLOR, NSAMPLES);
   //cap = cap_color.capacitiveSensorRaw(NSAMPLES);
@@ -174,6 +198,7 @@ loop()
   state = (cap < MIN_CAP_COLOR) || CircuitPlayground.leftButton(); // color change?
 
   if (state != last) {
+    // different from last time
     now = millis();                           // get current time
     if (state && (now > nextchangetime)) {    // button pressed and time for update?
         ++colorindex;                         // yes, increment index
@@ -185,8 +210,10 @@ loop()
         nextchangetime = now + MIN_CHANGE;    // compute timestamp before another update allowed
     }
 
-    last = state;                             // remember state (once per press)
+    last = state;                             // remember state (only change once per press)
   }
+
+  // read LED on pad capacitance
 
   cap = CircuitPlayground.readCap(CAP_ON, NSAMPLES);
   //cap = cap_on.capacitiveSensorRaw(NSAMPLES);
@@ -196,37 +223,33 @@ loop()
   DEBUG.println(cap);
 #endif
 
-  // determine if LEDs should be lit (button pressed)
-  setcolor = ((cap < MIN_CAP_ON) || CircuitPlayground.rightButton()) ? 0x000000 : curcolor;
+  // select current color if button or capacitive pad pressed, otherwise off
+  setcolor = ((cap < MIN_CAP_ON) || CircuitPlayground.rightButton()) ? NEOPIXEL_OFF : curcolor;
 
 #ifdef GRAVITY
-  // read accelerometer to get magnitudes of X and Y acceleration, which are related to angle of Circuit Playground board
-  x     = CircuitPlayground.motionX();
-#ifdef DEBUG
-  DEBUG.print(x);
-  DEBUG.print(' ');
-#endif
-  y     = CircuitPlayground.motionY();
-#ifdef DEBUG
-  DEBUG.print(y);
-  DEBUG.print(' ');
-#endif
+  // read accelerometer to get magnitudes of X and Y acceleration, which depend on angle of Circuit Playground board
+  x = CircuitPlayground.motionX();
+  y = CircuitPlayground.motionY();
 
   // compute angle from X and Y readings
   theta = atan2(y, x);
-#ifdef DEBUG
-  DEBUG.print(theta);
-  DEBUG.print(' ');
-#endif
 
   // compute which LED to light based on angle, offset to get desired angle with respect to down
-  led   = theta / LED_DIV + LED_OFFSET;
+  led = RADIANS_TO_LED(theta) + LED_OFFSET;
 
   // if angle is negative, wrap around to get positive number
   if (led < 0) {
     led += LED_POSITIONS;
   }
+
 #ifdef DEBUG
+  // output accelerometer values and results of calculations
+  DEBUG.print(x);
+  DEBUG.print(' ');
+  DEBUG.print(y);
+  DEBUG.print(' ');
+  DEBUG.print(theta);
+  DEBUG.print(' ');
   DEBUG.print(led);
   DEBUG.print(' ');
 #endif
@@ -238,23 +261,25 @@ loop()
   }
 
 #ifdef DEBUG
+  // output (possibly changed) LED position
   DEBUG.println(led);
 #endif
 
-  if ((led != lastled) || (setcolor != lastsetcolor)) { // different LED from last time?
-    // yes, turn off old LEDs and light new ones
-    CircuitPlayground.setPixelColor(lastled, 0);
-    // also turn off LED on other side
-    CircuitPlayground.setPixelColor((lastled + 5) % NPIXELS, 0);
-    // light new LED
-    CircuitPlayground.setPixelColor(led, setcolor);
-    // also light LED on other side
-    CircuitPlayground.setPixelColor((led + 5) % NPIXELS, setcolor);
-    // remember which position is lit
+  if ((led != lastled)) { // different LED from last time?
+    // different LED position from last time
+    setpair(lastled, NEOPIXEL_OFF);   // turn off previous LEDs
+    setpair(led, setcolor);           // light new LEDs
+
+    // remember current state
     lastled      = led;
     lastsetcolor = setcolor;
+  } else if (setcolor != lastsetcolor) {  // same position, different color?
+    // yes, different color
+    setpair(led, setcolor);   // update LED color
+    lastsetcolor = setcolor;  // remember current color
   }
 #else
+  // no gravity calculation, just update all LEDs
   for (pixel = 0; pixel < NPIXELS; ++pixel) {         // for each LED
     CircuitPlayground.setPixelColor(pixel, setcolor); // set its state
   }
